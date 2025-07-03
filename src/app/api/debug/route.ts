@@ -42,6 +42,32 @@ export async function POST(request: NextRequest) {
       })
     }
     
+    if (action === 'process_next') {
+      // Process next user in queue
+      const nextKey = await queueManager.processNext()
+      
+      if (nextKey) {
+        console.log(`⚡ Processed next user via debug endpoint: ${nextKey}`)
+        
+        // Auto-complete processing after 3 seconds (simulate checkout completion)
+        setTimeout(async () => {
+          await queueManager.completeProcessing(nextKey)
+          console.log(`🏁 Auto-completed processing for: ${nextKey}`)
+        }, 3000)
+        
+        return NextResponse.json({
+          success: true,
+          processedKey: nextKey,
+          message: `Processed user: ${nextKey}`
+        })
+      } else {
+        return NextResponse.json({
+          success: false,
+          message: "No users in queue to process"
+        })
+      }
+    }
+    
     return NextResponse.json(
       { error: "Invalid action" },
       { status: 400 }

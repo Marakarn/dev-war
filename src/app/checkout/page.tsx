@@ -12,7 +12,6 @@ const CheckOutPage = () => {
   const [isLoading, setIsLoading] = useState(true)
   const [hasSession, setHasSession] = useState(false)
   const [timeRemaining, setTimeRemaining] = useState(60 * 10) // 10 minutes in seconds
-  const [accessKey, setAccessKey] = useState("")
   const router = useRouter()
 
   const endSession = useCallback(async () => {
@@ -20,6 +19,7 @@ const CheckOutPage = () => {
     
     if (storedAccessKey) {
       try {
+        
         // Call API to end session and cleanup processing
         await fetch('/api/session', {
           method: 'DELETE',
@@ -53,7 +53,6 @@ const CheckOutPage = () => {
     }
 
     setHasSession(true)
-    setAccessKey(storedAccessKey)
     setIsLoading(false)
 
     // Set session start time if not already set

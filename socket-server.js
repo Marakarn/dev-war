@@ -403,4 +403,4 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-module.exports = { io, queueManager };
+export { io, queueManager };

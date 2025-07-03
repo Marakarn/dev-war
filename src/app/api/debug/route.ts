@@ -67,6 +67,70 @@ export async function POST(request: NextRequest) {
         })
       }
     }
+
+    if (action === 'clear_processing') {
+      // Clear only processing set (for fixing stuck processing queue)
+      const processingKeys = queueManager.getProcessingKeys()
+      
+      // Force clear all processing
+      for (const key of processingKeys) {
+        await queueManager.completeProcessing(key)
+      }
+      
+      console.log(`🧹 Cleared ${processingKeys.length} stuck processing items`)
+      
+      return NextResponse.json({
+        success: true,
+        message: `Cleared ${processingKeys.length} processing items`,
+        clearedKeys: processingKeys
+      })
+    }
+
+    if (action === 'debug_state') {
+      // Debug current queue state
+      queueManager.debugQueueState()
+      const queueInfo = queueManager.getQueueInfo()
+      
+      return NextResponse.json({
+        success: true,
+        message: "Debug state logged to console",
+        queueInfo
+      })
+    }
+
+    if (action === 'check_consumers') {
+      // ตรวจสอบ consumer status ใน RabbitMQ
+      try {
+        const response = await fetch('http://localhost:15672/api/consumers', {
+          headers: {
+            'Authorization': 'Basic ' + Buffer.from('devwar01:n6Qk5cF*$%7r!A7L').toString('base64')
+          }
+        })
+        
+        const consumers = await response.json()
+        const devWarConsumers = consumers.filter((c: { queue?: { name?: string } }) => 
+          c.queue && c.queue.name && 
+          (c.queue.name.includes('queue_updates') || 
+           c.queue.name.includes('processing_queue') || 
+           c.queue.name.includes('queue_state'))
+        )
+        
+        return NextResponse.json({
+          success: true,
+          message: "Consumer status checked",
+          consumers: devWarConsumers,
+          totalConsumers: consumers.length,
+          devWarConsumers: devWarConsumers.length
+        })
+      } catch (error) {
+        console.error('Failed to check consumers:', error)
+        return NextResponse.json({
+          success: false,
+          message: "Failed to check consumers",
+          error: error instanceof Error ? error.message : 'Unknown error'
+        })
+      }
+    }
     
     return NextResponse.json(
       { error: "Invalid action" },

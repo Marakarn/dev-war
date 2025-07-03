@@ -9,8 +9,9 @@ import fetch from 'node-fetch';
 
 // Pure WebSocket Relay - No Local Queue Management
 class WebSocketRelay {
-  constructor() {
-    // Remove local queue management - API is the ONLY source of truth
+  constructor(socketIO) {
+    // ✅ เพิ่ม Socket.IO reference เพื่อส่งข้อมูลไปยัง clients
+    this.io = socketIO;
     this.currentQueueState = { totalInQueue: 0, processing: [] };
     this.listeners = new Set();
     this.rabbitMQConnection = null;
@@ -79,7 +80,7 @@ class WebSocketRelay {
             };
             console.log('🔄 WebSocket: Synced state from API', this.currentQueueState);
             
-            // Broadcast updated state to all clients
+            // ✅ Broadcast updated state to all clients ทันที
             this.notifyListeners(this.currentQueueState);
           }
           this.rabbitMQChannel.ack(msg);
@@ -101,6 +102,12 @@ class WebSocketRelay {
 
   notifyListeners(data) {
     this.listeners.forEach(listener => listener(data));
+    
+    // ✅ ส่งข้อมูลไปยัง Socket.IO clients ทันที
+    if (this.io) {
+      console.log('📡 WebSocket: Broadcasting to all queue-updates clients:', data);
+      this.io.to('queue-updates').emit('queue-update', data);
+    }
   }
 
   async publishQueueUpdate() {
@@ -177,20 +184,20 @@ class WebSocketRelay {
   }
 }
 
-// Create queue instance (now a relay)
-const queueManager = new WebSocketRelay();
-
-// Create HTTP server
+// Create HTTP server first
 const httpServer = createServer();
 
 // Create Socket.IO server
 const io = new Server(httpServer, {
   cors: {
-    origin: "*",
+    origin: ["http://localhost:3000", "http://localhost:4000"],
     methods: ["GET", "POST"]
   },
   transports: ['websocket', 'polling']
 });
+
+// Create queue instance (relay) with Socket.IO reference
+const queueManager = new WebSocketRelay(io);
 
 // Handle client connections
 io.on('connection', (socket) => {

@@ -152,12 +152,12 @@ class WebSocketRelay {
   }
 
   // Deprecated methods - API is the source of truth
-  getPosition(key) {
+  getPosition() {
     console.warn('⚠️ WebSocket: getPosition deprecated - use API instead');
     return null;
   }
 
-  isMyTurn(key) {
+  isMyTurn() {
     console.warn('⚠️ WebSocket: isMyTurn deprecated - use API instead');
     return false;
   }
@@ -212,23 +212,34 @@ io.on('connection', (socket) => {
     console.log('👋 Client left queue updates:', socket.id);
   });
 
-  // Handle client checking their position
-  socket.on('check-position', (key) => {
-    const position = queueManager.getPosition(key);
-    const isMyTurn = queueManager.isMyTurn(key);
-    socket.emit('position-update', { key, position, isMyTurn });
-    console.log(`🔍 Position check for ${key}: ${position}, isMyTurn: ${isMyTurn}`);
+  // Handle client checking their position (deprecated - use API directly)
+  socket.on('check-position', async (key) => {
+    console.log('⚠️ DEPRECATED: check-position event should use API directly');
+    try {
+      const response = await fetch(`http://localhost:3000/api/queue?key=${encodeURIComponent(key)}`);
+      const data = await response.json();
+      socket.emit('position-update', { 
+        key, 
+        position: data.position, 
+        isMyTurn: data.isMyTurn 
+      });
+      console.log(`🔍 Position check for ${key}: ${data.position}, isMyTurn: ${data.isMyTurn}`);
+    } catch (error) {
+      console.error('❌ Failed to check position via API:', error);
+      socket.emit('position-update', { key, position: null, isMyTurn: false });
+    }
   });
 
-  // Handle adding to queue (for testing)
+  // Handle adding to queue (deprecated - use API directly)
   socket.on('add-to-queue', async (key) => {
+    console.log('⚠️ DEPRECATED: add-to-queue event should use API directly');
     try {
-      const result = await queueManager.addToQueue(key);
+      const result = await queueManager.addToQueueViaAPI(key);
       socket.emit('queue-joined', result);
-      console.log(`➕ Added to queue: ${key}, position: ${result.position}`);
+      console.log(`➕ Added to queue via API: ${key}, position: ${result.position}`);
     } catch (error) {
-      console.error('Error adding to queue:', error);
-      socket.emit('error', { message: 'Failed to join queue' });
+      console.error('❌ Error adding to queue via API:', error);
+      socket.emit('error', { message: 'Failed to join queue via API' });
     }
   });
 

@@ -34,6 +34,7 @@ const WaitingQueuePage = () => {
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
   const [isInQueue, setIsInQueue] = useState(false);
   const [showCaptcha, setShowCaptcha] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState("");
   const [isVerifyingCaptcha, setIsVerifyingCaptcha] = useState(false);
   const [generatedKey, setGeneratedKey] = useState("");
   const socketRef = useRef<Socket | null>(null);
@@ -102,7 +103,7 @@ const WaitingQueuePage = () => {
       socketRef.current?.emit("join-queue-updates");
     });
 
-    socketRef.current.on("connect_error", (error) => {
+    socketRef.current.on("connect_error", (error: any) => {
       console.error("❌ WebSocket connection error:", error);
     });
 
@@ -279,6 +280,7 @@ const WaitingQueuePage = () => {
 
   const closeCaptchaDialog = () => {
     setShowCaptcha(false);
+    setCaptchaToken("");
   };
 
   return (

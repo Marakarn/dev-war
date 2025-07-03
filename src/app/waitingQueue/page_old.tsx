@@ -1,5 +1,7 @@
 "use client";
 
+"use client";
+
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
@@ -34,11 +36,10 @@ const WaitingQueuePage = () => {
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
   const [isInQueue, setIsInQueue] = useState(false);
   const [showCaptcha, setShowCaptcha] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState("");
   const [isVerifyingCaptcha, setIsVerifyingCaptcha] = useState(false);
   const [generatedKey, setGeneratedKey] = useState("");
-  const socketRef = useRef<Socket | null>(null);
   const router = useRouter();
-
   const createSession = useCallback(async () => {
     try {
       const response = await fetch("/api/session", {
@@ -52,6 +53,7 @@ const WaitingQueuePage = () => {
       const data = await response.json();
 
       if (response.ok) {
+        // Store both session token and access key in localStorage
         localStorage.setItem("sessionToken", data.sessionToken);
         localStorage.setItem("accessKey", data.key || generatedKey);
         router.push("/checkout");
@@ -64,6 +66,7 @@ const WaitingQueuePage = () => {
     }
   }, [generatedKey, router]);
 
+  // Fetch queue status function
   const fetchQueueStatus = useCallback(async () => {
     if (!generatedKey) return;
     
@@ -76,6 +79,7 @@ const WaitingQueuePage = () => {
       if (response.ok) {
         setQueueStatus(data);
         
+        // If it's the user's turn OR position is null (not in queue anymore), create session and redirect
         if (data.isMyTurn || data.position === null) {
           console.log("🎉 User's turn or queue is empty, creating session...");
           await createSession();
@@ -88,7 +92,9 @@ const WaitingQueuePage = () => {
 
   // Initialize WebSocket connection
   useEffect(() => {
+    // Connect to WebSocket server
     const wsUrl = "http://localhost:3001";
+    
     console.log("🔌 Connecting to WebSocket server at:", wsUrl);
 
     socketRef.current = io(wsUrl, {
@@ -111,6 +117,7 @@ const WaitingQueuePage = () => {
       (data: { totalInQueue: number; processing: string[] }) => {
         console.log("📡 Queue update received:", data);
         
+        // Update totalInQueue immediately from WebSocket
         setQueueStatus((prev) => ({
           ...prev,
           position: prev?.position || null,
@@ -118,12 +125,14 @@ const WaitingQueuePage = () => {
           totalInQueue: data.totalInQueue,
         }));
         
+        // If queue is empty and user is still waiting, they should proceed
         if (data.totalInQueue === 0 && isInQueue && generatedKey) {
           console.log("🎉 Queue is empty, user should proceed!");
           createSession();
         }
         
         if (isInQueue && generatedKey) {
+          // Update queue status with latest info
           fetchQueueStatus();
         }
       }
@@ -157,14 +166,14 @@ const WaitingQueuePage = () => {
     };
   }, [isInQueue, generatedKey, fetchQueueStatus, createSession]);
 
-  // Poll queue status every 5 seconds when in queue (fallback)
+  // Poll queue status every 2 seconds when in queue (fallback)
   useEffect(() => {
     let interval: NodeJS.Timeout;
 
     if (isInQueue && generatedKey) {
       interval = setInterval(() => {
         fetchQueueStatus();
-      }, 5000);
+      }, 5000); // Less frequent polling since we have WebSocket
     }
 
     return () => {
@@ -173,13 +182,25 @@ const WaitingQueuePage = () => {
   }, [isInQueue, generatedKey, fetchQueueStatus]);
 
   const joinQueue = async () => {
+    // Show captcha dialog
     setShowCaptcha(true);
     setError("");
   };
 
-  const handleMathCaptchaVerify = async (isValid: boolean, token?: string) => {
-    if (!isValid || !token) {
-      setError("Math verification failed. Please try again.");
+  const handleCaptchaChange = async (token: string | null) => {
+    setCaptchaToken(token || "");
+
+    // If captcha is completed, automatically generate key and join queue
+    if (token) {
+      await generateKeyAndJoinQueue(token);
+    }
+  };
+
+  const generateKeyAndJoinQueue = async (token?: string) => {
+    const tokenToUse = token || captchaToken;
+
+    if (!tokenToUse) {
+      setError("Please complete the reCAPTCHA");
       return;
     }
 
@@ -187,19 +208,22 @@ const WaitingQueuePage = () => {
     setError("");
 
     try {
-      // Verify math captcha
-      const captchaResponse = await fetch("/api/verify-math-captcha", {
+      // Verify captcha first
+      const captchaResponse = await fetch("/api/verify-captcha", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ token: tokenToUse }),
       });
 
       const captchaData = await captchaResponse.json();
 
       if (!captchaResponse.ok || !captchaData.success) {
-        setError(captchaData.error || "Math verification failed");
+        setError(captchaData.error || "reCAPTCHA verification failed");
+        // Reset captcha
+        recaptchaRef.current?.reset();
+        setCaptchaToken("");
         return;
       }
 
@@ -215,10 +239,13 @@ const WaitingQueuePage = () => {
 
       if (!keyResponse.ok || !keyData.success) {
         setError("Failed to generate access key");
+        recaptchaRef.current?.reset();
+        setCaptchaToken("");
         return;
       }
 
       const newAccessKey = keyData.accessKey;
+      setGeneratedKey(newAccessKey);
       setGeneratedKey(newAccessKey);
 
       // Join queue with the generated key
@@ -239,11 +266,19 @@ const WaitingQueuePage = () => {
         setQueueStatus({
           position: data.position,
           isMyTurn: data.position === 1,
-          totalInQueue: data.totalInQueue || data.position,
+          totalInQueue: data.totalInQueue || data.position, // Use API data or fallback to position
         });
+
+        // Also notify WebSocket server about queue join (for real-time updates only)
+        if (socketRef.current?.connected) {
+          console.log("🔔 Notifying WebSocket about queue join for real-time updates:", newAccessKey);
+          // Don't add to queue via WebSocket, just notify for updates
+          // socketRef.current.emit('add-to-queue', newAccessKey);
+        }
 
         // If already first in queue, create session immediately
         if (data.position === 1) {
+          // Create session directly
           try {
             const sessionResponse = await fetch("/api/session", {
               method: "POST",
@@ -267,10 +302,16 @@ const WaitingQueuePage = () => {
         }
       } else {
         setError(data.error || "Failed to join queue");
+        // Reset captcha on error
+        recaptchaRef.current?.reset();
+        setCaptchaToken("");
       }
     } catch (error) {
       setError("Failed to join queue. Please try again.");
       console.error("Queue join error:", error);
+      // Reset captcha on error
+      recaptchaRef.current?.reset();
+      setCaptchaToken("");
     } finally {
       setIsLoading(false);
       setIsVerifyingCaptcha(false);
@@ -279,6 +320,8 @@ const WaitingQueuePage = () => {
 
   const closeCaptchaDialog = () => {
     setShowCaptcha(false);
+    setCaptchaToken("");
+    recaptchaRef.current?.reset();
   };
 
   return (
@@ -359,6 +402,7 @@ const WaitingQueuePage = () => {
                         Your position in queue
                       </div>
                       
+                      {/* Total queue count */}
                       <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mt-2">
                         <div className="text-lg font-semibold text-gray-700">
                           📊 Total in Queue: {queueStatus.totalInQueue || 0}
@@ -402,7 +446,7 @@ const WaitingQueuePage = () => {
         </CardContent>
       </Card>
 
-      {/* Math Captcha Dialog */}
+      {/* reCAPTCHA Dialog */}
       <Dialog open={showCaptcha} onOpenChange={setShowCaptcha}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -411,17 +455,20 @@ const WaitingQueuePage = () => {
               Security Verification
             </DialogTitle>
             <DialogDescription>
-              Please solve the math problem to verify you&apos;re human. An
+              Please complete the reCAPTCHA to verify you&apos;re human. An
               access key will be generated and you will automatically join the
               queue once verified.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
-            <MathCaptcha
-              onVerify={handleMathCaptchaVerify}
-              onReset={() => setError("")}
-            />
+            <div className="flex justify-center">
+              <ReCAPTCHA
+                ref={recaptchaRef}
+                sitekey={RECAPTCHA_SITE_KEY}
+                onChange={handleCaptchaChange}
+              />
+            </div>
 
             {isVerifyingCaptcha && (
               <div className="flex items-center justify-center space-x-2">

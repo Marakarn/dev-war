@@ -1,0 +1,44 @@
+@font-face {
+  font-family: 'gofive';
+  src:
+    url('./gofive-semi_bold.woff2') format('woff2'),
+    url('./gofive-semi_bold.woff2') format('woff');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'gofive';
+  src:
+    url('./gofive-medium.woff2') format('woff2'),
+    url('./gofive-medium.woff2') format('woff');
+  font-weight: medium;
+  font-style: medium;
+}
+
+@font-face {
+  font-family: 'gofive';
+  src:
+    url('./gofive-bold.woff2') format('woff2'),
+    url('./gofive-bold.woff2') format('woff');
+  font-weight: bold;
+  font-style: bold;
+}
+
+@font-face {
+  font-family: 'yellowtail';
+  src:
+    url('./Yellowtail-Regular.woff2') format('woff2'),
+    url('./Yellowtail-Regular.woff') format('woff');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'sriracha';
+  src:
+    url('./Sriracha-Regular.woff2') format('woff2'),
+    url('./Sriracha-Regular.woff') format('woff');
+  font-weight: normal;
+  font-style: normal;
+}

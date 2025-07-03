@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: dev-war-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: devwar01
+      RABBITMQ_DEFAULT_PASS: n6Qk5cF*$%7r!A7L
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: -rabbit log_levels [{connection,error},{default,error}] disk_free_limit 2147483648
+    ports:
+      - "5672:5672"        # AMQP port  
+      - "15672:15672"      # Management UI port
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - dev-war-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+
+  app:
+    build: .
+    container_name: dev-war-app
+    environment:
+      - NODE_ENV=production
+      - NEXTAUTH_URL=http://localhost:4000
+      - NEXTAUTH_SECRET=your-super-secret-key-here-change-this-in-production
+      - NEXT_PUBLIC_RECAPTCHA_SITE_KEY=6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI
+      - RECAPTCHA_SECRET_KEY=6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe
+      - RABBITMQ_URL=amqp://devwar01:n6Qk5cF*$%7r!A7L@rabbitmq:5672
+      # For team server: amqp://devwar01:n6Qk5cF*$%7r!A7L@10.8.5.5:5672
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=devwar01
+      - RABBITMQ_PASS=n6Qk5cF*$%7r!A7L
+      - WEBSOCKET_PORT=3001
+    ports:
+      - "4000:4000"
+      - "3001:3001"  # WebSocket port
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - dev-war-network
+    volumes:
+      - ./public:/app/public:ro
+
+volumes:
+  rabbitmq_data:
+
+networks:
+  dev-war-network:
+    driver: bridge

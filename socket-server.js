@@ -11,6 +11,8 @@ class RabbitMQQueue {
   constructor() {
     this.queue = [];
     this.processing = new Set();
+    this.activeUsers = new Set();
+    this.maxActiveUsers = 1;
     this.listeners = new Set();
     this.rabbitMQConnection = null;
     this.rabbitMQChannel = null;
@@ -74,9 +76,13 @@ class RabbitMQQueue {
             // Sync queue state from API
             this.queue = data.queue || [];
             this.processing = new Set(data.processing || []);
+            this.activeUsers = new Set(data.activeUsers || []);
+            this.maxActiveUsers = data.maxActiveUsers || 100;
             console.log('🔄 WebSocket: Synced queue state from API', {
               queueLength: this.queue.length,
-              processing: this.processing.size
+              processing: this.processing.size,
+              activeUsers: this.activeUsers.size,
+              maxActiveUsers: this.maxActiveUsers
             });
           }
           this.rabbitMQChannel.ack(msg);
@@ -216,7 +222,9 @@ class RabbitMQQueue {
   getQueueInfo() {
     return {
       totalInQueue: this.queue.length,
-      processing: Array.from(this.processing)
+      processing: Array.from(this.processing),
+      activeUsers: this.activeUsers.size,
+      maxActiveUsers: this.maxActiveUsers
     };
   }
 
@@ -270,8 +278,21 @@ io.on('connection', (socket) => {
   socket.on('check-position', (key) => {
     const position = queueManager.getPosition(key);
     const isMyTurn = queueManager.isMyTurn(key);
-    socket.emit('position-update', { key, position, isMyTurn });
-    console.log(`🔍 Position check for ${key}: ${position}, isMyTurn: ${isMyTurn}`);
+    const hasCapacity = queueManager.activeUsers.size < queueManager.maxActiveUsers;
+    const directAccess = position === null && hasCapacity;
+    const totalInQueue = queueManager.queue.length;
+    
+    socket.emit('position-update', { 
+      key, 
+      position, 
+      isMyTurn,
+      directAccess,
+      totalInQueue,
+      activeUsers: queueManager.activeUsers.size,
+      maxActiveUsers: queueManager.maxActiveUsers
+    });
+    
+    console.log(`🔍 Position check for ${key}: position=${position}, isMyTurn=${isMyTurn}, hasCapacity=${hasCapacity}, directAccess=${directAccess}, totalInQueue=${totalInQueue}`);
   });
 
   // Handle adding to queue (for testing)
@@ -283,6 +304,150 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('Error adding to queue:', error);
       socket.emit('error', { message: 'Failed to join queue' });
+    }
+  });
+
+  // Handle client leaving the queue
+  socket.on('leave-queue', async (key) => {
+    if (!key) {
+      socket.emit('leave-queue-result', { 
+        success: false, 
+        message: 'Key is required to leave queue' 
+      });
+      return;
+    }
+    
+    try {
+      console.log(`👋 WebSocket: Client ${socket.id} requested to leave queue with key: ${key}`);
+      
+      // First check if the user is in the queue
+      const position = queueManager.getPosition(key);
+      
+      if (position === null) {
+        // Check if they're an active user
+        const isActive = queueManager.activeUsers.has(key);
+        
+        if (isActive) {
+          // Remove from active users
+          queueManager.activeUsers.delete(key);
+          console.log(`🏁 WebSocket: Removed active user ${key}`);
+          
+          // Sync with API via RabbitMQ
+          if (queueManager.isConnectedToRabbitMQ && queueManager.rabbitMQChannel) {
+            try {
+              await queueManager.rabbitMQChannel.sendToQueue(
+                'queue_state',
+                Buffer.from(JSON.stringify({
+                  action: 'complete_processing',
+                  key,
+                  timestamp: Date.now()
+                })),
+                { persistent: true }
+              );
+            } catch (error) {
+              console.error('❌ Failed to sync user removal with API:', error);
+            }
+          }
+          
+          socket.emit('leave-queue-result', { 
+            success: true, 
+            message: 'Successfully left active session',
+            wasInQueue: false,
+            wasActive: true
+          });
+        } else {
+          socket.emit('leave-queue-result', { 
+            success: false, 
+            message: 'User not found in queue or active sessions',
+            wasInQueue: false,
+            wasActive: false
+          });
+        }
+        
+        return;
+      }
+      
+      // User is in queue, remove them
+      // Find the user in the queue
+      const index = queueManager.queue.findIndex(item => item.key === key);
+      
+      if (index !== -1) {
+        // Store the position for response
+        const formerPosition = queueManager.queue[index].position;
+        
+        // Remove the user from the queue
+        queueManager.queue.splice(index, 1);
+        
+        // Update positions for remaining users
+        queueManager.queue.forEach((item, i) => {
+          item.position = i + 1;
+        });
+        
+        console.log(`👋 WebSocket: Removed user ${key} from queue at position ${formerPosition}`);
+        
+        // Sync with API via RabbitMQ
+        if (queueManager.isConnectedToRabbitMQ && queueManager.rabbitMQChannel) {
+          try {
+            await queueManager.rabbitMQChannel.sendToQueue(
+              'queue_state',
+              Buffer.from(JSON.stringify({
+                action: 'sync_state',
+                queue: queueManager.queue,
+                processing: Array.from(queueManager.processing),
+                activeUsers: Array.from(queueManager.activeUsers),
+                maxActiveUsers: queueManager.maxActiveUsers,
+                timestamp: Date.now()
+              })),
+              { persistent: true }
+            );
+          } catch (error) {
+            console.error('❌ Failed to sync queue state with API after removal:', error);
+          }
+        }
+        
+        // Notify all clients about the update
+        const queueInfo = queueManager.getQueueInfo();
+        io.to('queue-updates').emit('queue-update', queueInfo);
+        
+        // After removing a user, trigger a position update for the new first user in queue
+        if (queueManager.queue.length > 0 && queueManager.activeUsers.size < queueManager.maxActiveUsers) {
+          const nextUser = queueManager.queue[0];
+          if (nextUser) {
+            console.log(`🚨 Socket Server: Notifying next user in line: ${nextUser.key}`);
+            // Broadcast position update to all clients (the client will check if it's them)
+            io.to('queue-updates').emit('position-update', {
+              key: nextUser.key,
+              position: 1,
+              isMyTurn: true,
+              directAccess: false,
+              totalInQueue: queueManager.queue.length,
+              activeUsers: queueManager.activeUsers.size,
+              maxActiveUsers: queueManager.maxActiveUsers
+            });
+          }
+        }
+        
+        socket.emit('leave-queue-result', {
+          success: true,
+          message: `Successfully left queue from position ${formerPosition}`,
+          wasInQueue: true,
+          wasActive: false,
+          formerPosition
+        });
+      } else {
+        socket.emit('leave-queue-result', {
+          success: false,
+          message: 'Failed to remove from queue',
+          wasInQueue: true,
+          wasActive: false
+        });
+      }
+    } catch (error) {
+      console.error('❌ WebSocket: Error leaving queue:', error);
+      socket.emit('leave-queue-result', { 
+        success: false, 
+        message: 'Failed to leave queue due to an error' 
+      });
     }
   });
 
@@ -403,4 +568,5 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-module.exports = { io, queueManager };
+// Export for external use
+export { io, queueManager };

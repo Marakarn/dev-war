@@ -9,12 +9,14 @@ interface QueueItem {
 }
 
 interface QueueUpdateListener {
-  (data: { totalInQueue: number; processing: string[] }): void
+  (data: { totalInQueue: number; processing: string[]; activeUsers: number; maxActiveUsers: number }): void
 }
 
 class QueueManager {
   private queue: QueueItem[] = []
   private processing: Set<string> = new Set()
+  private activeUsers: Set<string> = new Set() // Track currently active users
+  private maxActiveUsers = 1 // Maximum allowed concurrent users
   private rabbitMQConnection: amqp.Connection | null = null
   private rabbitMQChannel: amqp.Channel | null = null
   private isConnectedToRabbitMQ = false
@@ -122,7 +124,7 @@ class QueueManager {
     this.listeners.delete(listener)
   }
 
-  private notifyListeners(data: { totalInQueue: number; processing: string[] }) {
+  private notifyListeners(data: { totalInQueue: number; processing: string[]; activeUsers: number; maxActiveUsers: number }) {
     this.listeners.forEach(listener => listener(data))
   }
 
@@ -138,6 +140,8 @@ class QueueManager {
             action: 'sync_state',
             queue: this.queue,
             processing: Array.from(this.processing),
+            activeUsers: Array.from(this.activeUsers),
+            maxActiveUsers: this.maxActiveUsers,
             timestamp: Date.now()
           })),
           { persistent: true }
@@ -150,7 +154,7 @@ class QueueManager {
           { persistent: true }
         )
         
-        console.log(`📡 API: Published queue state - Queue: ${this.queue.length}, Processing: ${this.processing.size}`)
+        console.log(`📡 API: Published queue state - Queue: ${this.queue.length}, Processing: ${this.processing.size}, Active Users: ${this.activeUsers.size}/${this.maxActiveUsers}`)
       } catch (error) {
         console.error('❌ API: Failed to publish queue update to RabbitMQ:', error)
       }
@@ -192,8 +196,24 @@ class QueueManager {
   }
 
   isMyTurn(key: string): boolean {
-    const item = this.queue.find(item => item.key === key)
-    return item ? item.position === 1 : false
+    // First check if there's capacity and user is first in queue
+    const item = this.queue.find(item => item.key === key);
+    const isFirstInQueue = item !== undefined && item.position === 1;
+    
+    // A user gets a turn if they're first in queue AND there's capacity available
+    const hasCapacity = this.activeUsers.size < this.maxActiveUsers;
+    const queueLength = this.queue.length;
+    
+    console.log(`🔍 isMyTurn check for ${key}:`, {
+      position: item?.position,
+      isFirstInQueue,
+      hasCapacity,
+      activeUsers: this.activeUsers.size,
+      maxActiveUsers: this.maxActiveUsers,
+      queueLength
+    });
+    
+    return isFirstInQueue && hasCapacity;
   }
 
   async processNext(): Promise<string | null> {
@@ -207,14 +227,22 @@ class QueueManager {
       // Send to processing queue via RabbitMQ
       if (this.isConnectedToRabbitMQ && this.rabbitMQChannel) {
         try {
+          console.log(`📬 Sending key: ${item.key} to processing_queue in RabbitMQ`)
           await this.rabbitMQChannel.sendToQueue(
             'processing_queue',
-            Buffer.from(JSON.stringify({ key: item.key, timestamp: Date.now() })),
+            Buffer.from(JSON.stringify({ 
+              key: item.key, 
+              timestamp: Date.now(),
+              action: 'process_user' 
+            })),
             { persistent: true }
           )
+          console.log(`✅ Successfully sent ${item.key} to processing_queue`)
         } catch (error) {
-          console.error('Failed to send to processing queue:', error)
+          console.error('❌ Failed to send to processing queue:', error)
         }
+      } else {
+        console.warn('⚠️ RabbitMQ not connected, skipping sending to processing_queue')
       }
       
       await this.publishQueueUpdate()
@@ -232,6 +260,84 @@ class QueueManager {
     console.log(`📊 Current queue length: ${this.queue.length}`)
     
     await this.publishQueueUpdate()
+  }
+
+  // Add a user to active users
+  addActiveUser(key: string): boolean {
+    // Check if we're at capacity
+    if (this.activeUsers.size >= this.maxActiveUsers) {
+      return false;
+    }
+    
+    this.activeUsers.add(key);
+    this.publishQueueUpdate();
+    return true;
+  }
+
+  // Remove a user from active users
+  removeActiveUser(key: string): void {
+    if (this.activeUsers.has(key)) {
+      this.activeUsers.delete(key);
+      
+      console.log(`👤 Removed active user: ${key}, active users now: ${this.activeUsers.size}/${this.maxActiveUsers}`);
+      
+      // If there are queued users and we now have capacity, notify next in queue
+      if (this.queue.length > 0 && this.activeUsers.size < this.maxActiveUsers) {
+        // Important: Don't remove the user from the queue yet - that happens in processNext
+        // Instead, get the first user in the queue and broadcast their position update
+        const nextUser = this.queue[0];
+        if (nextUser) {
+          console.log(`� Next user in line: ${nextUser.key} (position ${nextUser.position}) - Queue advancing!`);
+          // Force publish an update to notify clients
+          this.publishQueueUpdate();
+        }
+      }
+    }
+  }
+
+  // Remove a user from the queue (when they leave or cancel)
+  async removeFromQueue(key: string): Promise<boolean> {
+    const index = this.queue.findIndex(item => item.key === key);
+    
+    if (index === -1) {
+      console.log(`❓ Attempted to remove non-existent user ${key} from queue`);
+      return false;
+    }
+    
+    // Remove the user from the queue
+    this.queue.splice(index, 1);
+    
+    // Update positions for remaining users
+    this.updatePositions();
+    
+    console.log(`👋 Removed user ${key} from queue at position ${index + 1}`);
+    console.log(`📊 Queue length after removal: ${this.queue.length}`);
+    
+    // Also remove from processing if they were there
+    if (this.processing.has(key)) {
+      this.processing.delete(key);
+      console.log(`🧹 Also removed ${key} from processing set`);
+    }
+    
+    // Publish queue update to notify all clients
+    await this.publishQueueUpdate();
+    
+    return true;
+  }
+
+  // Check if active users are at capacity
+  isAtCapacity(): boolean {
+    return this.activeUsers.size >= this.maxActiveUsers;
+  }
+
+  // Get current active user count
+  getActiveUserCount(): number {
+    return this.activeUsers.size;
+  }
+
+  // For debugging: get list of active users
+  getActiveUsers(): string[] {
+    return Array.from(this.activeUsers);
   }
 
   // Debug method to check processing status
@@ -266,11 +372,37 @@ class QueueManager {
     })
   }
 
-  getQueueInfo() {
+  // Debug method to get full queue status for troubleshooting
+  getDebugStatus(): { 
+    queue: QueueItem[], 
+    processing: string[], 
+    activeUsers: string[],
+    maxActiveUsers: number 
+  } {
     return {
+      queue: [...this.queue],
+      processing: Array.from(this.processing),
+      activeUsers: Array.from(this.activeUsers),
+      maxActiveUsers: this.maxActiveUsers
+    };
+  }
+
+  getQueueInfo() {
+    const queueStatus = {
       totalInQueue: this.queue.length,
-      processing: Array.from(this.processing)
-    }
+      processing: Array.from(this.processing),
+      activeUsers: this.activeUsers.size,
+      maxActiveUsers: this.maxActiveUsers
+    };
+    
+    // Log detailed queue info for debugging
+    console.log('📊 Queue status:', {
+      ...queueStatus,
+      queueUsers: this.queue.map(item => ({ key: item.key, position: item.position })),
+      activeUsersList: Array.from(this.activeUsers)
+    });
+    
+    return queueStatus;
   }
 
   // For graceful shutdown

@@ -12,34 +12,59 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Check if it's the user's turn or queue is empty
-    const isMyTurn = queueManager.isMyTurn(key)
-    const position = queueManager.getPosition(key)
-    const queueInfo = queueManager.getQueueInfo()
-    
-    // Allow session creation if:
-    // 1. It's user's turn (position = 1)
-    // 2. User is not in queue but queue is empty (position = null && totalInQueue = 0)
-    const canCreateSession = isMyTurn || (position === null && queueInfo.totalInQueue === 0)
-    
-    if (!canCreateSession) {
-      return NextResponse.json(
-        { error: "Not your turn yet", position },
-        { status: 403 }
-      )
+    console.log(`🔑 Session creation request for key: ${key}`)
+
+    // Check if we're at capacity for active users
+    if (queueManager.isAtCapacity()) {
+      // If at capacity, make sure user is in queue and it's their turn
+      const isMyTurn = queueManager.isMyTurn(key)
+      const position = queueManager.getPosition(key)
+      const queueInfo = queueManager.getQueueInfo()
+      
+      console.log(`📊 Session request capacity check: isAtCapacity=true, isMyTurn=${isMyTurn}, position=${position}`)
+      
+      // If not their turn, deny session creation and return position
+      if (!isMyTurn) {
+        console.log(`❌ Session denied for key: ${key} - Not their turn (position: ${position}, isMyTurn: ${isMyTurn})`)
+        return NextResponse.json(
+          { 
+            error: "Max active users reached. Please wait your turn in queue.",
+            position,
+            activeUsers: queueManager.getActiveUserCount(),
+            maxActiveUsers: queueInfo.maxActiveUsers
+          },
+          { status: 403 }
+        )
+      }
     }
 
-    // Process the user (remove from queue) only if they are actually in queue
-    if (position !== null) {
+    // Get position before modifying queue (for logging)
+    const initialPosition = queueManager.getPosition(key)
+    
+    // If user is at position 1 in queue, process them (remove from queue)
+    if (initialPosition === 1) {
+      console.log(`✅ Processing user: ${key} from position 1`)
       await queueManager.processNext()
     }
     
-    // Create a session token (in a real app, you'd use proper authentication)
-    const sessionToken = Math.random().toString(36).substr(2, 9)
+    // Try to add user to active users
+    const addedToActive = queueManager.addActiveUser(key)
     
-    const message = position === null 
-      ? "Session created - queue was empty" 
-      : "Session created successfully"
+    if (!addedToActive) {
+      console.log(`❌ Failed to add user to active sessions: ${key}`)
+      return NextResponse.json(
+        { error: "Failed to add user to active session. Maximum capacity reached." },
+        { status: 403 }
+      )
+    }
+    
+    // Create a session token
+    const sessionToken = Math.random().toString(36).substr(2, 9)
+    const message = initialPosition === null 
+      ? "Session created - direct access" 
+      : `Session created successfully from queue position ${initialPosition}`
+    
+    console.log(`🎉 Session created for key: ${key} - ${message}`)
     
     return NextResponse.json({
       success: true,
@@ -68,7 +93,10 @@ export async function DELETE(request: NextRequest) {
       )
     }
 
-    // Complete processing to remove user from processing set
+    // Remove user from active users
+    queueManager.removeActiveUser(key)
+    
+    // Complete processing to remove user from processing set if they were there
     await queueManager.completeProcessing(key)
     
     console.log(`🏁 Session ended for user: ${key}`)

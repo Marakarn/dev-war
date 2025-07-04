@@ -12,7 +12,7 @@ class RabbitMQQueue {
     this.queue = [];
     this.processing = new Set();
     this.activeUsers = new Set();
-    this.maxActiveUsers = 1;
+    this.maxActiveUsers = 100;
     this.listeners = new Set();
     this.rabbitMQConnection = null;
     this.rabbitMQChannel = null;

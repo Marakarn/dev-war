@@ -16,7 +16,7 @@ class QueueManager {
   private queue: QueueItem[] = []
   private processing: Set<string> = new Set()
   private activeUsers: Set<string> = new Set() // Track currently active users
-  private maxActiveUsers = 1 // Maximum allowed concurrent users
+  private maxActiveUsers = 100 // Maximum allowed concurrent users
   private rabbitMQConnection: amqp.Connection | null = null
   private rabbitMQChannel: amqp.Channel | null = null
   private isConnectedToRabbitMQ = false
